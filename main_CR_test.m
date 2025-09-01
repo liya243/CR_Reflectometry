@@ -7,10 +7,25 @@ function main_CR_temperature_sweep()
     tbox = GetTBOX();
     clkg = GetCLOCKGEN();
     
+    %Установка длины импульса в 10 дискретов
+    ComSet(clkg, 50, 10)
+    
+    %Установка частоты сканирования в 2000 Гц
+    ComSet(clkg, 53, 2000)
+    
+    %Установка частоты дискретизации в 100 МГц
+    ComSet(clkg, 56, 1)
+    
+    %Установка чувствительности температуры лазера в 4 степень
+    ComSet(tbox, 80, 5)
+    
+    %Установка температуры термобокса
+    ComSet(tbox, 10, 0)
+    
     % Параметры эксперимента
     N = 100; % number of reflectograms per temperature
     L_m = 500; % fiber length in m
-    T_max = 2000; % максимальная температура
+    T_max = 100; % максимальная температура
     T_step = 1; % шаг температуры
     temperatures = -T_max:T_step:T_max; % диапазон температур
     
@@ -44,7 +59,7 @@ function main_CR_temperature_sweep()
         while temp_retry <= max_temp_retries && ~temp_ok
             % Установка температуры
             fprintf('Устанавливаем температуру: %d (попытка %d/%d)\n', ...
-                    target_temp, temp_retry + 1, max_temp_retries);
+                    target_temp, temp_retry, max_temp_retries);
             ComSet(tbox, 0, target_temp);
             
             % Ждем стабилизации температуры
@@ -82,7 +97,7 @@ function main_CR_temperature_sweep()
                 end
             else
                 fprintf('Не удалось прочитать температуру. Попытка %d/%d\n', ...
-                        temp_retry + 1, max_temp_retries);
+                        temp_retry, max_temp_retries);
                 temp_retry = temp_retry + 1;
                 
                 if temp_retry > max_temp_retries
@@ -137,7 +152,12 @@ function create_temperature_quality_report(target_temps, measured_temps, retry_c
     temp_errors = abs(measured_temps - target_temps);
     plot(target_temps, temp_errors, 'o-', 'LineWidth', 1, 'MarkerSize', 3);
     hold on;
-    yline(tolerance, 'r--', 'Допуск', 'LineWidth', 2);
+    
+    % ЗАМЕНА yline на совместимую версию
+    x_limits = xlim;
+    plot([x_limits(1), x_limits(2)], [tolerance, tolerance], 'r--', 'LineWidth', 2);
+    text(x_limits(2), tolerance, ' Допуск', 'Color', 'red', 'VerticalAlignment', 'bottom');
+    
     xlabel('Целевая температура');
     ylabel('Отклонение');
     title('Отклонение измеренной температуры от целевой');

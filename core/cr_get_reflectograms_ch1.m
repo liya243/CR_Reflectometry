@@ -24,11 +24,11 @@ function [R, z_m, info] = cr_get_reflectograms_ch1(N, L_m, adc, opts)
     end
     
     if ~isfield(opts, 'min_correlation') || isempty(opts.min_correlation)
-        opts.min_correlation = 0.884; % минимальная корреляция между трассами
+        opts.min_correlation = 0.99; % минимальная корреляция между трассами
     end
     
     if ~isfield(opts, 'max_std_ratio') || isempty(opts.max_std_ratio)
-        opts.max_std_ratio = 0.15; % максимальное отношение std/mean
+        opts.max_std_ratio = 0.17; % максимальное отношение std/mean
     end
     
     % Добавляем параметры для диапазона проверки
