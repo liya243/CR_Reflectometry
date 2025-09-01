@@ -49,10 +49,10 @@ function [R, z_m, info] = cr_get_reflectograms_ch1(N, L_m, adc, opts)
         error('L_m must be a numeric scalar');
     end
 
-    % Предварительное выделение памяти для СРЕДНИХ трасс
-    dz = 299792458 / (2 * 1.468 * 100e6); % метров на отсчет
-    segSize = max(16, ceil(L_m / dz));
-    mean_traces = zeros(segSize, length(temperatures));
+    % --- constants and meters -> samples conversion ---
+    c_value = 299792458;                 % m/s
+    dz = c_value / (2 * opts.n_eff * opts.Fs);   % m per 1 sample (round trip)
+    segSize = max(16, ceil(L_m / dz));     % window length in samples
     info = struct('Fs', opts.Fs, 'n_eff', opts.n_eff, ...
                   'dz_m', dz, 'segSize', segSize, ...
                   'requested_L_m', L_m, 'sync_ch', opts.sync_ch);
@@ -85,35 +85,34 @@ function [R, z_m, info] = cr_get_reflectograms_ch1(N, L_m, adc, opts)
                 if retry_count <= opts.max_retries
                     fprintf('Качество данных низкое. Попытка %d/%d...\n', ...
                             retry_count, opts.max_retries);
-                    pause(0.5);
+                    pause(0.5); % небольшая пауза перед повторной съёмкой
                 else
                     warning('Не удалось получить качественные данные после %d попыток', opts.max_retries);
+                    % Визуализируем последний пакет данных
                     visualize_reflectograms(last_R, z_m, opts);
                 end
             end
 
         catch ME
+            % In case of error — guaranteed stop of card and rethrow exception
             PCIe_9852_2CH_STOP(adc);
             rethrow(ME);
         end
     end
     
-    % Добавляем информацию о качестве
+    % Добавляем информацию о качестве в output
     info.retry_count = retry_count;
     info.quality_check_passed = quality_ok;
-    
     if quality_ok
-        % Если качество прошло - возвращаем среднюю трассу
-        R_mean = mean(R, 2);
         [info.correlation_score, info.std_ratio] = calculate_quality_metrics(R, z_m, opts);
-        info.raw_traces_count = N;
     else
-        % Если качество не прошло - все равно возвращаем среднюю из последней попытки
-        R_mean = mean(last_R, 2);
-        [info.correlation_score, info.std_ratio] = calculate_quality_metrics(last_R, z_m, opts);
-        info.raw_traces_count = N;
-        info.quality_warning = 'Качество не соответствует критериям';
+        % Если качество не прошло, используем последний пакет
+        R = last_R;
+        [info.correlation_score, info.std_ratio] = calculate_quality_metrics(R, z_m, opts);
     end
+
+    % Correct stop
+    %PCIe_9852_2CH_STOP(adc);
 end
 
 % --------- Визуализация рефлектограмм ---------

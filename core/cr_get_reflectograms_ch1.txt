@@ -7,7 +7,7 @@ function [R, z_m, info] = cr_get_reflectograms_ch1(N, L_m, adc, opts)
     end
     
     if ~isfield(opts, 'Fs') || isempty(opts.Fs)
-        opts.Fs = 200e6;
+        opts.Fs = 100e6;
     end
     
     if ~isfield(opts, 'n_eff') || isempty(opts.n_eff)
@@ -28,12 +28,12 @@ function [R, z_m, info] = cr_get_reflectograms_ch1(N, L_m, adc, opts)
     end
     
     if ~isfield(opts, 'max_std_ratio') || isempty(opts.max_std_ratio)
-        opts.max_std_ratio = 0.1; % максимальное отношение std/mean
+        opts.max_std_ratio = 0.15; % максимальное отношение std/mean
     end
     
     % Добавляем параметры для диапазона проверки
     if ~isfield(opts, 'z1') || isempty(opts.z1)
-        opts.z1 = 0; % начальная координата по умолчанию
+        opts.z1 = 50; % начальная координата по умолчанию
     end
     
     if ~isfield(opts, 'z2') || isempty(opts.z2)
@@ -63,6 +63,7 @@ function [R, z_m, info] = cr_get_reflectograms_ch1(N, L_m, adc, opts)
     % --- capture with quality check and retry ---
     retry_count = 0;
     quality_ok = false;
+    last_R = []; % сохраняем последний пакет данных
     
     while retry_count <= opts.max_retries && ~quality_ok
         try
@@ -71,6 +72,7 @@ function [R, z_m, info] = cr_get_reflectograms_ch1(N, L_m, adc, opts)
 
             % First channel:
             R = buff{1};  % [segSize ? N], in volts
+            last_R = R; % сохраняем последний пакет
 
             % Distance axis (m)
             z_m = (0:segSize-1).' * dz;
@@ -86,6 +88,8 @@ function [R, z_m, info] = cr_get_reflectograms_ch1(N, L_m, adc, opts)
                     pause(0.5); % небольшая пауза перед повторной съёмкой
                 else
                     warning('Не удалось получить качественные данные после %d попыток', opts.max_retries);
+                    % Визуализируем последний пакет данных
+                    visualize_reflectograms(last_R, z_m, opts);
                 end
             end
 
@@ -101,10 +105,70 @@ function [R, z_m, info] = cr_get_reflectograms_ch1(N, L_m, adc, opts)
     info.quality_check_passed = quality_ok;
     if quality_ok
         [info.correlation_score, info.std_ratio] = calculate_quality_metrics(R, z_m, opts);
+    else
+        % Если качество не прошло, используем последний пакет
+        R = last_R;
+        [info.correlation_score, info.std_ratio] = calculate_quality_metrics(R, z_m, opts);
     end
 
     % Correct stop
     %PCIe_9852_2CH_STOP(adc);
+end
+
+% --------- Визуализация рефлектограмм ---------
+function visualize_reflectograms(R, z_m, opts)
+    figure('Name', 'Последний пакет рефлектограмм', ...
+           'NumberTitle', 'off', ...
+           'Position', [100, 100, 1000, 600]);
+    
+    % Создаем подграфики
+    subplot(2,1,1);
+    
+    % Рисуем все трассы
+    plot(z_m, R, 'LineWidth', 1);
+    xlabel('Расстояние, м');
+    ylabel('Амплитуда, В');
+    title(sprintf('Все %d рефлектограмм (последняя попытка)', size(R, 2)));
+    grid on;
+    
+    % Добавляем обозначение диапазона проверки качества
+    hold on;
+    y_limits = ylim;
+    fill([opts.z1, opts.z2, opts.z2, opts.z1], ...
+         [y_limits(1), y_limits(1), y_limits(2), y_limits(2)], ...
+         [0.9, 0.9, 0.9], 'FaceAlpha', 0.3, 'EdgeColor', 'none');
+    text(mean([opts.z1, opts.z2]), mean(y_limits), ...
+         'Диапазон проверки качества', ...
+         'HorizontalAlignment', 'center', 'BackgroundColor', 'white');
+    hold off;
+    
+    % Средняя трасса и стандартное отклонение
+    subplot(2,1,2);
+    mean_trace = mean(R, 2);
+    std_trace = std(R, 0, 2);
+    
+    plot(z_m, mean_trace, 'b', 'LineWidth', 2);
+    hold on;
+    fill([z_m; flipud(z_m)], ...
+         [mean_trace - std_trace; flipud(mean_trace + std_trace)], ...
+         [0.8, 0.8, 1], 'FaceAlpha', 0.5, 'EdgeColor', 'none');
+    xlabel('Расстояние, м');
+    ylabel('Амплитуда, В');
+    title('Средняя трасса ± стандартное отклонение');
+    legend('Среднее', '±1?', 'Location', 'best');
+    grid on;
+    
+    % Добавляем аннотацию с метриками качества
+    [correlation_score, std_ratio] = calculate_quality_metrics(R, z_m, opts);
+    annotation('textbox', [0.15, 0.01, 0.7, 0.05], ...
+               'String', sprintf('Корреляция: %.3f (min=%.3f), STD/mean: %.3f (max=%.3f)', ...
+                                 correlation_score, opts.min_correlation, ...
+                                 std_ratio, opts.max_std_ratio), ...
+               'FitBoxToText', 'on', ...
+               'BackgroundColor', 'white', ...
+               'EdgeColor', 'red');
+    
+    drawnow; % Принудительное обновление графика
 end
 
 % --------- Проверка качества рефлектограмм (с учетом диапазона) ---------
