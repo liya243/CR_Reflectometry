@@ -7,25 +7,101 @@ function main_CR_temperature_sweep()
     tbox = GetTBOX();
     clkg = GetCLOCKGEN();
     
+    % Параметры эксперимента (можно вынести в отдельный конфиг файл)
+    experiment_name = 'Температурное сканирование лазера';
+    fiber_type = 'SMF-28'; % тип волокна
+    fiber_length = 500; % длина волокна в метрах
+    n_eff = 1.468; % эффективный показатель преломления
+    operator_name = 'Ислам'; % имя оператора
+    
     %Установка длины импульса в 10 дискретов
-    ComSet(clkg, 50, 10)
+    pulse_length = 10;
+    ComSet(clkg, 50, pulse_length)
     
     %Установка частоты сканирования в 2000 Гц
-    ComSet(clkg, 53, 2000)
+    scan_frequency = 2000;
+    ComSet(clkg, 53, scan_frequency)
     
     %Установка частоты дискретизации в 100 МГц
+    sampling_rate = 100; % МГц
     ComSet(clkg, 56, 1)
     
-    %Установка чувствительности температуры лазера в 4 степень
-    ComSet(tbox, 80, 5)
+    %Установка чувствительности температуры лазера в 5 степень
+    laser_temp_precision = 5;
+    ComSet(tbox, 80, laser_temp_precision)
     
-    %Установка температуры термобокса
-    ComSet(tbox, 10, 0)
+    % Параметры для проверки температуры термобокса
+    target_tbox_temp = 64; % целевая температура термобокса
+    tbox_temp_precision = 1; %чувствительность температуры термобокса
+    tbox_temp_tolerance = 0; % допустимое отклонение температуры термобокса
+    max_tbox_retries = 20; % максимальное число попыток установки температуры термобокса
+    tbox_stabilization_time = 5; % время стабилизации температуры термобокса, секунды
+    
+    % Установка чувствительности температуры термобокса
+    fprintf('Устанавливаем увствительность температуры термобокса: %.1f\n', tbox_temp_precision);
+    ComSet(tbox, 90, tbox_temp_precision);
+    
+    % Установка температуры термобокса
+    fprintf('Устанавливаем температуру термобокса: %.1f\n', target_tbox_temp);
+    ComSet(tbox, 10, target_tbox_temp);
+    
+    % Ожидание установления температуры термобокса
+    fprintf('Ожидаем установления температуры термобокса...\n');
+    tbox_temp_ok = false;
+    tbox_retry = 1;
+    measured_tbox_temp = NaN;
+    
+    while tbox_retry <= max_tbox_retries && ~tbox_temp_ok
+        % Ждем стабилизации температуры термобокса
+        fprintf('Ждем стабилизации температуры термобокса (%d сек)...\n', tbox_stabilization_time);
+        pause(tbox_stabilization_time);
+        
+        % Проверяем текущую температуру термобокса через команду 30
+        current_tbox_temp_str = ComGet(tbox, 30);
+        fprintf('Ответ от термобокса: %s\n', current_tbox_temp_str);
+        
+        % Парсим строку чтобы получить числовое значение температуры термобокса
+        temp_parts = strsplit(current_tbox_temp_str);
+        if length(temp_parts) >= 3
+            measured_tbox_temp = str2double(temp_parts{3});
+            fprintf('Температура термобокса: %.1f (целевая: %.1f)\n', ...
+                    measured_tbox_temp, target_tbox_temp);
+            
+            % Проверяем соответствие температуры термобокса
+            if abs(measured_tbox_temp - target_tbox_temp) <= tbox_temp_tolerance
+                tbox_temp_ok = true;
+                fprintf('Температура термобокса установлена корректно\n');
+            else
+                fprintf('Температура термобокса не соответствует: отклонение %.1f\n', ...
+                        abs(measured_tbox_temp - target_tbox_temp));
+                tbox_retry = tbox_retry + 1;
+                
+                if tbox_retry > max_tbox_retries
+                    fprintf('Достигнут лимит попыток для термобокса. Продолжаем с текущей температурой.\n');
+                    tbox_temp_ok = true; % все равно продолжаем
+                else
+                    % Увеличиваем время ожидания при повторных попытках
+                    extra_wait = 2;
+                    fprintf('Ждем дополнительно %d сек...\n', extra_wait);
+                    pause(extra_wait);
+                end
+            end
+        else
+            fprintf('Не удалось прочитать температуру термобокса. Попытка %d/%d\n', ...
+                    tbox_retry, max_tbox_retries);
+            tbox_retry = tbox_retry + 1;
+            
+            if tbox_retry > max_tbox_retries
+                fprintf('Достигнут лимит попыток для термобокса. Продолжаем эксперимент.\n');
+                tbox_temp_ok = true; % все равно продолжаем
+            end
+        end
+    end
     
     % Параметры эксперимента
     N = 100; % number of reflectograms per temperature
     L_m = 500; % fiber length in m
-    T_max = 100; % максимальная температура
+    T_max = 10; % максимальная температура
     T_step = 1; % шаг температуры
     temperatures = -T_max:T_step:T_max; % диапазон температур
     
@@ -48,6 +124,9 @@ function main_CR_temperature_sweep()
     fprintf('Начинаем эксперимент с температурным сканированием...\n');
     fprintf('Диапазон температур: от %d до %d с шагом %d\n', -T_max, T_max, T_step);
     fprintf('Допуск температуры: ±%.1f\n', temp_tolerance);
+    
+    % Запись времени начала эксперимента
+    experiment_start_time = datetime('now');
     
     % Главный цикл по температурам
     for i = 1:length(temperatures)
@@ -126,6 +205,10 @@ function main_CR_temperature_sweep()
                 target_temp, measured_temps(i));
     end
     
+    % Запись времени окончания эксперимента
+    experiment_end_time = datetime('now');
+    experiment_duration = experiment_end_time - experiment_start_time;
+    
     % Остановка оборудования
     PCIe_9852_2CH_STOP(adc);
     
@@ -137,70 +220,108 @@ function main_CR_temperature_sweep()
          'all_traces', 'z', 'temperatures', 'measured_temps', ...
          'temp_retry_counts', 'temp_tolerance', 'N', 'L_m');
     
-    % Создание отчета о качестве установки температуры
-    create_temperature_quality_report(temperatures(:), measured_temps(:), temp_retry_counts(:), temp_tolerance, pwd)
+    % Создание отчёта об эксперименте
+    create_experiment_report(dir_dat, experiment_name, operator_name, ...
+        experiment_start_time, experiment_end_time, experiment_duration, ...
+        fiber_type, fiber_length, n_eff, target_tbox_temp, tbox_temp_precision, measured_tbox_temp, ...
+        tbox_temp_tolerance, tbox_retry, pulse_length, scan_frequency, ...
+        sampling_rate, laser_temp_precision, N, T_max, T_step, temp_tolerance, ...
+        max_temp_retries, stabilization_time, measured_temps, temp_retry_counts);
     
     fprintf('Эксперимент завершен! Данные сохранены в: %s\n', dir_dat);
 end
 
-function create_temperature_quality_report(target_temps, measured_temps, retry_counts, tolerance, save_dir)
-    % Создание отчета о качестве установки температуры
-    figure('Position', [100, 100, 1200, 800]);
+function create_experiment_report(save_dir, experiment_name, operator_name, ...
+    start_time, end_time, duration, fiber_type, fiber_length, n_eff, ...
+    target_tbox_temp, tbox_temp_precision, measured_tbox_temp, tbox_temp_tolerance, tbox_retries, ...
+    pulse_length, scan_freq, sampling_rate, laser_temp_precision, ...
+    N, T_max, T_step, temp_tolerance, max_temp_retries, stabilization_time, ...
+    measured_temps, temp_retry_counts)
     
-    % График отклонения температуры
-    subplot(2, 2, 1);
-    temp_errors = abs(measured_temps - target_temps);
-    plot(target_temps, temp_errors, 'o-', 'LineWidth', 1, 'MarkerSize', 3);
-    hold on;
+    % Создание текстового отчёта в правильной кодировке
+    report_filename = fullfile(save_dir, 'experiment_report.txt');
     
-    % ЗАМЕНА yline на совместимую версию
-    x_limits = xlim;
-    plot([x_limits(1), x_limits(2)], [tolerance, tolerance], 'r--', 'LineWidth', 2);
-    text(x_limits(2), tolerance, ' Допуск', 'Color', 'red', 'VerticalAlignment', 'bottom');
+    % Используем fopen с правильной кодировкой для Windows
+    fid = fopen(report_filename, 'w', 'n', 'windows-1251'); % или 'ISO-8859-1'
     
-    xlabel('Целевая температура');
-    ylabel('Отклонение');
-    title('Отклонение измеренной температуры от целевой');
-    grid on;
-    legend('Отклонение', 'Допуск');
+    if fid == -1
+        error('Не удалось создать файл отчёта: %s', report_filename);
+    end
     
-    % График числа попыток
-    subplot(2, 2, 2);
-    stem(target_temps, retry_counts, 'filled', 'MarkerSize', 3);
-    xlabel('Целевая температура');
-    ylabel('Число попыток');
-    title('Число попыток установки температуры');
-    grid on;
+    % Функция для записи строк с правильными переносами
+    write_line = @(text) fprintf(fid, '%s\r\n', text);
+    write_empty = @() fprintf(fid, '\r\n');
     
-    % Статистика
-    subplot(2, 2, 3);
-    within_tolerance = temp_errors <= tolerance;
-    success_rate = mean(within_tolerance) * 100;
+    write_line('ОТЧЁТ ОБ ЭКСПЕРИМЕНТЕ');
+    write_line('=====================');
+    write_empty();
     
-    bar([mean(temp_errors), max(temp_errors), success_rate]);
-    set(gca, 'XTickLabel', {'Среднее отклонение', 'Макс отклонение', 'Успешных, %'});
-    ylabel('Значение');
-    title('Статистика установки температуры');
-    grid on;
+    write_line('Общая информация:');
+    write_line('-----------------');
+    write_line(sprintf('Название эксперимента: %s', experiment_name));
+    write_line(sprintf('Оператор: %s', operator_name));
+    write_line(sprintf('Дата начала: %s', datestr(start_time, 'yyyy-mm-dd HH:MM:SS')));
+    write_line(sprintf('Дата окончания: %s', datestr(end_time, 'yyyy-mm-dd HH:MM:SS')));
+    write_line(sprintf('Продолжительность: %s', char(duration)));
+    write_line(sprintf('Папка с данными: %s', save_dir));
+    write_empty();
     
-    % Текстовая информация
-    subplot(2, 2, 4);
-    axis off;
-    text(0.1, 0.9, sprintf('Статистика температуры:'), 'FontSize', 12, 'FontWeight', 'bold');
-    text(0.1, 0.7, sprintf('Допуск: ±%.1f', tolerance));
-    text(0.1, 0.6, sprintf('Среднее отклонение: %.2f', mean(temp_errors)));
-    text(0.1, 0.5, sprintf('Максимальное отклонение: %.2f', max(temp_errors)));
-    text(0.1, 0.4, sprintf('Успешных установок: %.1f%%', success_rate));
-    text(0.1, 0.3, sprintf('Всего попыток: %d', sum(retry_counts)));
-    text(0.1, 0.2, sprintf('Макс попыток для одной точки: %d', max(retry_counts)));
+    write_line('Параметры волокна:');
+    write_line('------------------');
+    write_line(sprintf('Тип волокна: %s', fiber_type));
+    write_line(sprintf('Длина волокна: %d м', fiber_length));
+    write_line(sprintf('Эффективный показатель преломления: %.3f', n_eff));
+    write_empty();
     
-    saveas(gcf, fullfile(save_dir, 'temperature_quality_report.png'));
-    saveas(gcf, fullfile(save_dir, 'temperature_quality_report.fig'));
+    write_line('Параметры термобокса:');
+    write_line('---------------------');
+    write_line(sprintf('Целевая температура термобокса: %.1f', target_tbox_temp));
+    write_line(sprintf('Измеренная температура термобокса: %.1f', measured_tbox_temp));
+    write_line(sprintf('Допуск температуры термобокса: ±%.1f', tbox_temp_tolerance));
+    write_line(sprintf('Чувствительность температуры термобокса: %d степень', tbox_temp_precision));
+    write_line(sprintf('Количество попыток установки: %d', tbox_retries));
+    write_empty();
     
-    % Сохранение CSV с данными
-    temp_data = table(target_temps', measured_temps, temp_errors, retry_counts, within_tolerance, ...
-                     'VariableNames', {'TargetTemp', 'MeasuredTemp', 'Error', 'RetryCount', 'WithinTolerance'});
-    writetable(temp_data, fullfile(save_dir, 'temperature_control_data.csv'));
+    write_line('Параметры оборудования:');
+    write_line('----------------------');
+    write_line(sprintf('Длина импульса: %d дискретов', pulse_length));
+    write_line(sprintf('Частота сканирования: %d Гц', scan_freq));
+    write_line(sprintf('Частота дискретизации: %d МГц', sampling_rate));
+    write_line(sprintf('Точность температуры лазера: %d степень', laser_temp_precision));
+    write_empty();
+    
+    write_line('Параметры температурного сканирования:');
+    write_line('-------------------------------------');
+    write_line(sprintf('Количество рефлектограмм на температуру: %d', N));
+    write_line(sprintf('Диапазон температур лазера: от %d до %d', -T_max, T_max));
+    write_line(sprintf('Шаг температуры лазера: %d', T_step));
+    write_line(sprintf('Допуск температуры лазера: ±%.1f', temp_tolerance));
+    write_line(sprintf('Максимальное количество попыток: %d', max_temp_retries));
+    write_line(sprintf('Время стабилизации: %d сек', stabilization_time));
+    write_empty();
+    
+    write_line('Результаты температурного сканирования лазера:');
+    write_line('---------------------------------------------');
+    write_line('Температура (цель) | Температура (измерено) | Попытки');
+    write_line('-------------------|------------------------|---------');
+    
+    for i = 1:length(measured_temps)
+        write_line(sprintf('%17d | %22.1f | %8d', ...
+                -T_max + (i-1)*T_step, measured_temps(i), temp_retry_counts(i)));
+    end
+    
+    write_empty();
+    write_line('Примечания:');
+    write_line('----------');
+    write_line(sprintf('- Эксперимент проводился с постоянной температурой термобокса (%.1f)', target_tbox_temp));
+    write_line(sprintf('- Температура лазера изменялась в диапазоне от %d до %d', -T_max, T_max));
+    write_line(sprintf('- Для каждой температуры лазера снималось %d рефлектограмм', N));
+    write_line('- Данные сохранялись после каждого температурного шага');
+    write_line(sprintf('- Чувствительность термобокса: 1 попугай = 0.0004 * 2^(3 - %d) °C', tbox_temp_precision));
+    
+    fclose(fid);
+    
+    fprintf('Отчёт об эксперименте сохранён: %s\n', report_filename);
 end
 
 function create_temperature_heatmap(all_traces, z, target_temps, measured_temps, save_dir)
