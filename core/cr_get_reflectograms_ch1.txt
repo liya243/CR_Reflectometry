@@ -1,0 +1,164 @@
+function [R, z_m, info] = cr_get_reflectograms_ch1(N, L_m, adc, opts)
+% CR_GET_REFLECTOGRAMS_CH1  Capture N reflectograms of length L (meters) from CH0.
+
+    % Обработка входных параметров (вместо arguments)
+    if nargin < 4
+        opts = struct();
+    end
+    
+    if ~isfield(opts, 'Fs') || isempty(opts.Fs)
+        opts.Fs = 200e6;
+    end
+    
+    if ~isfield(opts, 'n_eff') || isempty(opts.n_eff)
+        opts.n_eff = 1.468;
+    end
+    
+    if ~isfield(opts, 'sync_ch') || isempty(opts.sync_ch)
+        opts.sync_ch = 0;
+    end
+    
+    % Добавляем параметры для проверки качества
+    if ~isfield(opts, 'max_retries') || isempty(opts.max_retries)
+        opts.max_retries = 100; % максимальное число попыток пересъёмки
+    end
+    
+    if ~isfield(opts, 'min_correlation') || isempty(opts.min_correlation)
+        opts.min_correlation = 0.884; % минимальная корреляция между трассами
+    end
+    
+    if ~isfield(opts, 'max_std_ratio') || isempty(opts.max_std_ratio)
+        opts.max_std_ratio = 0.1; % максимальное отношение std/mean
+    end
+    
+    % Добавляем параметры для диапазона проверки
+    if ~isfield(opts, 'z1') || isempty(opts.z1)
+        opts.z1 = 0; % начальная координата по умолчанию
+    end
+    
+    if ~isfield(opts, 'z2') || isempty(opts.z2)
+        opts.z2 = 300; % конечная координата по умолчанию
+    end
+    
+    % Проверка типов данных
+    if ~isscalar(N) || ~isnumeric(N)
+        error('N must be a numeric scalar');
+    end
+    
+    if ~isscalar(L_m) || ~isnumeric(L_m)
+        error('L_m must be a numeric scalar');
+    end
+
+    % --- constants and meters -> samples conversion ---
+    c_value = 299792458;                 % m/s
+    dz = c_value / (2 * opts.n_eff * opts.Fs);   % m per 1 sample (round trip)
+    segSize = max(16, ceil(L_m / dz));     % window length in samples
+    info = struct('Fs', opts.Fs, 'n_eff', opts.n_eff, ...
+                  'dz_m', dz, 'segSize', segSize, ...
+                  'requested_L_m', L_m, 'sync_ch', opts.sync_ch);
+
+    % --- prepare paths to adlink ---
+    local_addpath_if_needed('adlink');
+
+    % --- capture with quality check and retry ---
+    retry_count = 0;
+    quality_ok = false;
+    
+    while retry_count <= opts.max_retries && ~quality_ok
+        try
+            % Get segmented and aligned traces
+            buff = PCIe_9852_2CH_GIGAGET(adc, N, segSize, opts.sync_ch);
+
+            % First channel:
+            R = buff{1};  % [segSize ? N], in volts
+
+            % Distance axis (m)
+            z_m = (0:segSize-1).' * dz;
+            
+            % Проверка качества данных только в указанном диапазоне
+            quality_ok = check_reflectogram_quality(R, z_m, opts);
+            
+            if ~quality_ok
+                retry_count = retry_count + 1;
+                if retry_count <= opts.max_retries
+                    fprintf('Качество данных низкое. Попытка %d/%d...\n', ...
+                            retry_count, opts.max_retries);
+                    pause(0.5); % небольшая пауза перед повторной съёмкой
+                else
+                    warning('Не удалось получить качественные данные после %d попыток', opts.max_retries);
+                end
+            end
+
+        catch ME
+            % In case of error — guaranteed stop of card and rethrow exception
+            PCIe_9852_2CH_STOP(adc);
+            rethrow(ME);
+        end
+    end
+    
+    % Добавляем информацию о качестве в output
+    info.retry_count = retry_count;
+    info.quality_check_passed = quality_ok;
+    if quality_ok
+        [info.correlation_score, info.std_ratio] = calculate_quality_metrics(R, z_m, opts);
+    end
+
+    % Correct stop
+    %PCIe_9852_2CH_STOP(adc);
+end
+
+% --------- Проверка качества рефлектограмм (с учетом диапазона) ---------
+function is_ok = check_reflectogram_quality(R, z_m, opts)
+    % Вычисляем метрики качества только в указанном диапазоне
+    [correlation_score, std_ratio] = calculate_quality_metrics(R, z_m, opts);
+    
+    % Проверяем критерии качества
+    is_ok = (correlation_score >= opts.min_correlation) && ...
+            (std_ratio <= opts.max_std_ratio);
+    
+    if ~is_ok
+        fprintf('Качество данных: correlation=%.3f (min=%.3f), std_ratio=%.3f (max=%.3f)\n', ...
+                correlation_score, opts.min_correlation, std_ratio, opts.max_std_ratio);
+    end
+end
+
+% --------- Вычисление метрик качества (с учетом диапазона) ---------
+function [correlation_score, std_ratio] = calculate_quality_metrics(R, z_m, opts)
+    % Определяем индексы для выбранного диапазона z1-z2
+    idx_range = z_m >= opts.z1 & z_m <= opts.z2;
+    
+    % Если в диапазоне нет точек, используем весь диапазон
+    if ~any(idx_range)
+        warning('Диапазон z1=%.2f - z2=%.2f не содержит данных. Используется весь диапазон.', opts.z1, opts.z2);
+        idx_range = true(size(z_m));
+    end
+    
+    % Выбираем только данные из нужного диапазона
+    R_range = R(idx_range, :);
+    
+    % 1. Проверка корреляции между трассами
+    if size(R_range, 2) > 1
+        % Вычисляем попарные корреляции
+        corr_matrix = corr(R_range);
+        % Берем среднюю корреляцию (исключая диагональ)
+        correlation_score = mean(corr_matrix(~eye(size(corr_matrix))));
+    else
+        correlation_score = 1; % если только одна трасса
+    end
+    
+    % 2. Проверка отношения стандартного отклонения к среднему
+    mean_trace = mean(R_range, 2);
+    std_dev = std(R_range, 0, 2);
+    
+    % Избегаем деления на ноль
+    non_zero_mean = abs(mean_trace);
+    non_zero_mean(non_zero_mean == 0) = 1; % заменяем нули на 1
+    std_ratio = mean(std_dev ./ non_zero_mean);
+end
+
+% --------- local helper ---------
+function local_addpath_if_needed(p)
+    if ~isempty(p) && exist(p, 'dir') && all(cellfun(@(x) ~strcmpi(x,p), strsplit(path,pathsep)))
+        addpath(p);
+    end
+end

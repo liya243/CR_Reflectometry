@@ -1,0 +1,174 @@
+%%--------------------------------------------------------------------------
+%	Company:		ADLINK													
+%	Last update:	2016/05/23											
+%                                                                          
+%	This sample runs AI with DMA Double Buffer continuously.	
+%																			
+%	SyncMode:		ASync													
+%   Channel:	    ALL														
+%	Trigger Source:	SOFTWARE												
+%	Trigger Type:	POST													
+%	Delay:			Disabled												
+%	ReTrigger:		Disabled												
+%-------------------------------------------------------------------------- 
+%%
+function res=PCIe_9852_2CH_GIGAGET(adc, buffHeight, segmentSize, sync_ch)
+    
+    addpath('adlink/WDDASK');
+    
+    LIB = adc.LIB;
+
+    
+%% Function vars init
+    accSize = buffHeight * segmentSize;
+    accBuf0 = zeros(1,accSize,'double');
+    accBuf1 = zeros(1,accSize,'double');
+
+    accPos = 1;
+    trigIndex = 1;
+    trigLevel = -1.0;
+    trigger = false;
+%% ADC Init
+    AccessCnt = int32(0);
+    Stopped = 0;
+    HalfReady = 0;
+    bufferID0 = uint16(0);
+    bufferID1 = uint16(0);
+    AI_ReadCount = adc.ReadCount;
+    SampleRate = adc.SampleRate;
+    card = adc.card;
+    pbuffer0 = adc.pbuffer0;
+    pbuffer1 = adc.pbuffer1;
+    AdRange = adc.AdRange;
+    
+    volts = zeros(1,AI_ReadCount,'double');
+    
+    % for 2kHz and 100MHz = 50000 adc vals per full reflectogram + 10%
+    % overhead
+    GIGASIZE=uint32(buffHeight*50000*1.1); 
+    GIGACounter = 1;
+    GigaRES1=zeros(1,GIGASIZE,'double');
+    GigaRES2=zeros(1,GIGASIZE,'double');
+
+
+    tic;    % Set the Time
+    margin = 2; % margin in seconds for the TimeOut
+    TimeOut = double(AI_ReadCount)/SampleRate + margin; % Acquisition time in seconds (plus margin)
+    TimeLeft = TimeOut;
+    index = 0;
+    overrunFlag = uint16(0);
+    
+
+    while TimeLeft>=0
+        TimeLeft = TimeOut - toc;
+        [error, HalfReady, Stopped] = calllib('dasklib','WD_AI_AsyncDblBufferHalfReady',card, HalfReady, Stopped);
+        if error < 0 
+            calllib(LIB,'WD_AI_AsyncClear',card,0,AccessCnt);
+            calllib(LIB,'WD_AI_ContBufferReset',card);
+            calllib(LIB,'WD_Release_Card',card);
+            unloadlibrary(LIB);
+            fprintf('WD_AI_AsyncDblBufferHalfReady failed with error code %d\n',error);
+            return;
+        end
+
+        
+        
+        if HalfReady == true
+            tic;
+            TimeLeft = TimeOut;%reset TimeLeft for next buffer   
+            
+            if index == 0
+                buffer0 = pbuffer0.Value;
+                [error,buffer0,volts]=calllib(LIB,'WD_AI_ContVScale',card,AdRange,buffer0,volts,AI_ReadCount);
+                index = 1;
+                %fprintf('Buffer 0 HalfReady , press anykey on figure to stop\n');
+            else
+                buffer1 = pbuffer1.Value;
+                [error,buffer1,volts]=calllib(LIB,'WD_AI_ContVScale',card,AdRange,buffer1,volts,AI_ReadCount);
+                index = 0;
+                %fprintf('Buffer 1 HalfReady , press anykey on figure to stop\n');
+            end
+
+            
+            volts1 = volts(2:2:end);
+            volts0 = volts(1:2:end);
+            vsize = length(volts0);
+
+            
+            if GIGACounter+vsize < GIGASIZE
+                GigaRES1(GIGACounter:GIGACounter+vsize-1)=volts0;
+                GigaRES2(GIGACounter:GIGACounter+vsize-1)=volts1;
+                GIGACounter = GIGACounter+vsize;
+            else
+                GigaRES1(GIGACounter:GIGASIZE-1)=volts0(1:GIGASIZE-GIGACounter);
+                GigaRES2(GIGACounter:GIGASIZE-1)=volts1(1:GIGASIZE-GIGACounter);
+                GIGACounter = GIGASIZE;
+                Stopped=true;
+            end
+            %disp(GIGACounter);
+
+        end
+        if Stopped == true
+            break;
+        end
+        pause(0.001);
+    end
+    
+    counter = 1;
+
+while counter<=GIGASIZE;
+    if trigger%если синхра найдена
+        if accPos <= accSize && accSize - accPos <= GIGASIZE - counter;
+            gs1=GigaRES1(counter:counter+segmentSize-1);
+            gs2=GigaRES2(counter:counter+segmentSize-1);
+            f1 = find(gs1(20:end)<=trigLevel,1,'first');
+            f2 = find(gs2(20:end)<=trigLevel,1,'first');
+            
+            
+            if length(f1)==0 && length(f2)==0
+                accBuf0(accPos:accPos+segmentSize-1)=GigaRES1(counter:counter+segmentSize-1);
+                accBuf1(accPos:accPos+segmentSize-1)=GigaRES2(counter:counter+segmentSize-1);
+                accPos = accPos + segmentSize;
+            else
+                trigger = false;
+                %counter = counter + segmentSize;
+            end
+            
+            counter = counter + segmentSize;
+        else
+            if accPos > accSize
+                %копирование и на выход
+                res{1} = (reshape(accBuf0, [segmentSize,buffHeight])); %%return value
+                res{2} = (reshape(accBuf1, [segmentSize,buffHeight])); %%return value
+                accPos=1;
+                break;
+            end
+        end
+        trigger = false;
+    else%поиск синхроимпульса подмешанному в рефлектограмму
+        if sync_ch==0
+            if trigLevel >= 0 %если триггерный уровень > 0
+                if GigaRES1(counter) > trigLevel%если данные выше триггера
+                    trigger = true;
+                end
+            else%если триггерный уровень < 0
+                if GigaRES1(counter) < trigLevel
+                    trigger = true;
+                end
+            end
+        else
+            if trigLevel >= 0 %если триггерный уровень > 0
+                if GigaRES2(counter) > trigLevel%если данные выше триггера
+                    trigger = true;
+                end
+            else%если триггерный уровень < 0
+                if GigaRES2(counter) < trigLevel
+                    trigger = true;
+                end
+            end
+        end
+        counter = counter+1;
+    end
+end
+
+end

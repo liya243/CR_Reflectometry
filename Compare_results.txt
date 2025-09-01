@@ -1,0 +1,204 @@
+function analyze_correlation_between_experiments()
+    % Âûáîğ ïàïîê ñ ıêñïåğèìåíòàìè
+    exp1_dir = uigetdir('', 'Âûáåğèòå ïàïêó ïåğâîãî ıêñïåğèìåíòà');
+    exp2_dir = uigetdir('', 'Âûáåğèòå ïàïêó âòîğîãî ıêñïåğèìåíòà');
+    
+    % Çàãğóçêà äàííûõ
+    [data1, temps1] = load_experiment_data(exp1_dir);
+    [data2, temps2] = load_experiment_data(exp2_dir);
+    print(data1)
+    % Âûáîğ äèàïàçîíà z
+    figure;
+    plot(data1.z, mean(data1.all_traces, 2), 'b', 'LineWidth', 2);
+    hold on;
+    plot(data2.z, mean(data2.all_traces, 2), 'r', 'LineWidth', 2);
+    xlabel('Äëèíà, ì');
+    ylabel('Àìïëèòóäà, Â');
+    title('Ñğåäíèå ğåôëåêòîãğàììû äëÿ âûáîğà äèàïàçîíà');
+    legend('İêñïåğèìåíò 1', 'İêñïåğèìåíò 2');
+    grid on;
+    
+    % Èíòåğàêòèâíûé âûáîğ äèàïàçîíà
+    fprintf('Âûáåğèòå äèàïàçîí z1-z2 íà ãğàôèêå (äâà êëèêà)\n');
+    [z_range, ~] = ginput(2);
+    z1 = min(z_range);
+    z2 = max(z_range);
+    fprintf('Âûáğàí äèàïàçîí: z1=%.1f ì, z2=%.1f ì\n', z1, z2);
+    
+    % Íàõîäèì èíäåêñû äëÿ âûáğàííîãî äèàïàçîíà
+    idx_range1 = find(data1.z >= z1 & data1.z <= z2);
+    idx_range2 = find(data2.z >= z1 & data2.z <= z2);
+    
+    % Èçâëåêàåì äàííûå èç âûáğàííîãî äèàïàçîíà
+    traces1_range = data1.all_traces(idx_range1, :);
+    traces2_range = data2.all_traces(idx_range2, :);
+    
+    % Âû÷èñëÿåì ìàòğèöó êîğğåëÿöèé
+    correlation_matrix = compute_correlation_matrix(traces1_range, traces2_range);
+    
+    % Âèçóàëèçàöèÿ ğåçóëüòàòîâ
+    plot_correlation_results(correlation_matrix, temps1, temps2, z1, z2, exp1_dir, exp2_dir);
+    
+    % Äîïîëíèòåëüíûé àíàëèç: íàõîäèì ìàêñèìàëüíûå êîğğåëÿöèè
+    find_max_correlations(correlation_matrix, temps1, temps2);
+end
+
+function [exp_data, temperatures] = load_experiment_data(exp_dir)
+    % Çàãğóçêà äàííûõ ıêñïåğèìåíòà
+    mat_files = dir(fullfile(exp_dir, '*.mat'));
+    
+    all_traces_cell = {};
+    temp_values = [];
+    z_data = [];
+    found_full_data = false;
+    
+    % Ñíà÷àëà èùåì ïîëíûé ôàéë äàííûõ
+    for i = 1:length(mat_files)
+        if ~isempty(strfind(mat_files(i).name, 'full_experiment_data'))
+            % Çàãğóæàåì ïîëíûé ôàéë äàííûõ
+            data = load(fullfile(exp_dir, mat_files(i).name));
+            exp_data = data;
+            temperatures = data.temperatures;
+            found_full_data = true;
+            break;
+        end
+    end
+    
+    if found_full_data
+        return;
+    end
+    
+    % Åñëè íå íàøëè ïîëíûé ôàéë, ñîáèğàåì äàííûå èç îòäåëüíûõ
+    for i = 1:length(mat_files)
+        if ~isempty(strfind(mat_files(i).name, 'temp_'))
+            % Çàãğóæàåì îòäåëüíûé òåìïåğàòóğíûé ôàéë
+            data = load(fullfile(exp_dir, mat_files(i).name));
+            
+            % Ïğîâåğÿåì ñòğóêòóğó äàííûõ
+            if isfield(data, 'traces')
+                all_traces_cell{end+1} = data.traces;
+                
+                if isfield(data, 'target_temp')
+                    temp_values(end+1) = data.target_temp;
+                elseif isfield(data, 'measured_temp')
+                    temp_values(end+1) = data.measured_temp;
+                end
+                
+                if isempty(z_data) && isfield(data, 'z')
+                    z_data = data.z;
+                end
+            end
+        end
+    end
+    
+    if ~isempty(all_traces_cell)
+        % Ïğåîáğàçóåì cell array â ÷èñëîâóş ìàòğèöó
+        % Îïğåäåëÿåì ğàçìåğû
+        n_z = size(all_traces_cell{1}, 1);
+        n_traces_per_temp = size(all_traces_cell{1}, 2);
+        n_temps = length(all_traces_cell);
+        
+        % Ñîçäàåì ÷èñëîâóş ìàòğèöó [z ? (òåìïåğàòóğû*ïîâòîğåíèÿ)]
+        all_traces = zeros(n_z, n_temps * n_traces_per_temp);
+        
+        for i = 1:n_temps
+            start_col = (i-1)*n_traces_per_temp + 1;
+            end_col = i*n_traces_per_temp;
+            all_traces(:, start_col:end_col) = all_traces_cell{i};
+        end
+        
+        exp_data.all_traces = all_traces;
+        exp_data.z = z_data;
+        temperatures = temp_values;
+    else
+        error('Íå íàéäåíû äàííûå ıêñïåğèìåíòîâ â ïàïêå: %s', exp_dir);
+    end
+end
+
+function correlation_matrix = compute_correlation_matrix(traces1, traces2)
+    % Âû÷èñëåíèå ìàòğèöû êîğğåëÿöèé ìåæäó âñåìè ïàğàìè òğàññ
+    
+    n1 = size(traces1, 2); % êîëè÷åñòâî òğàññ â ıêñïåğèìåíòå 1
+    n2 = size(traces2, 2); % êîëè÷åñòâî òğàññ â ıêñïåğèìåíòå 2
+    
+    correlation_matrix = zeros(n1, n2);
+    
+    fprintf('Âû÷èñëåíèå êîğğåëÿöèé...\n');
+    
+    for i = 1:n1
+        for j = 1:n2
+            % Âû÷èñëÿåì êîğğåëÿöèş Ïèğñîíà
+            corr_val = corr(traces1(:, i), traces2(:, j));
+            correlation_matrix(i, j) = corr_val;
+        end
+        
+        % Ïğîãğåññ
+        if mod(i, 10) == 0
+            fprintf('Îáğàáîòàíî %d/%d òğàññ...\n', i, n1);
+        end
+    end
+    
+    fprintf('Ìàòğèöà êîğğåëÿöèé âû÷èñëåíà: %d x %d\n', n1, n2);
+end
+
+function plot_correlation_results(corr_matrix, temps1, temps2, z1, z2, exp1_dir, exp2_dir)
+    % Âèçóàëèçàöèÿ ğåçóëüòàòîâ êîğğåëÿöèîííîãî àíàëèçà
+    
+    figure('Position', [100, 100, 1400, 1000]);
+    
+    % Òåïëîâàÿ êàğòà êîğğåëÿöèé
+    subplot(2, 2, [1, 2]);
+    imagesc(temps1, temps2, corr_matrix');
+    colorbar;
+    xlabel('Òåìïåğàòóğà ıêñïåğèìåíòà 1');
+    ylabel('Òåìïåğàòóğà ıêñïåğèìåíòà 2');
+    title(sprintf('Ìàòğèöà êîğğåëÿöèé (äèàïàçîí z: %.1f-%.1f ì)', z1, z2));
+    axis xy;
+    colormap('jet');
+    caxis([0, 1]);
+    
+    % Ãğàôèê äèàãîíàëè (åñëè òåìïåğàòóğû ñîâïàäàşò)
+    subplot(2, 2, 3);
+    if length(temps1) == length(temps2) && all(temps1 == temps2)
+        diag_corr = diag(corr_matrix);
+        plot(temps1, diag_corr, 'o-', 'LineWidth', 2, 'MarkerSize', 6);
+        xlabel('Òåìïåğàòóğà');
+        ylabel('Êîğğåëÿöèÿ');
+        title('Êîğğåëÿöèÿ ïğè îäèíàêîâûõ òåìïåğàòóğàõ');
+        grid on;
+    else
+        text(0.5, 0.5, 'Òåìïåğàòóğíûå äèàïàçîíû ğàçíûå', ...
+             'HorizontalAlignment', 'center', 'FontSize', 12);
+        axis off;
+    end
+    
+    % Ãğàôèê ìàêñèìàëüíûõ êîğğåëÿöèé
+    subplot(2, 2, 4);
+    [max_corr, max_idx] = max(corr_matrix, [], 2);
+    best_temps2 = temps2(max_idx);
+    
+    plot(temps1, max_corr, 'bo-', 'LineWidth', 2, 'MarkerSize', 6);
+    xlabel('Òåìïåğàòóğà ıêñïåğèìåíòà 1');
+    ylabel('Ìàêñèìàëüíàÿ êîğğåëÿöèÿ');
+    title('Ìàêñ. êîğğåëÿöèÿ ñ ıêñïåğèìåíòîì 2');
+    grid on;
+    
+    % Ñîõğàíåíèå ğåçóëüòàòîâ
+    [~, exp1_name] = fileparts(exp1_dir);
+    [~, exp2_name] = fileparts(exp2_dir);
+    saveas(gcf, sprintf('correlation_analysis_%s_vs_%s.png', exp1_name, exp2_name));
+    save(sprintf('correlation_results_%s_vs_%s.mat', exp1_name, exp2_name), ...
+         'corr_matrix', 'temps1', 'temps2', 'z1', 'z2');
+end
+
+function find_max_correlations(corr_matrix, temps1, temps2)
+    % Ïîèñê ìàêñèìàëüíûõ êîğğåëÿöèé
+    
+    fprintf('\n=== ÀÍÀËÈÇ ÌÀÊÑÈÌÀËÜÍÛÕ ÊÎĞĞÅËßÖÈÉ ===\n');
+    
+    [max_corr, max_idx] = max(corr_matrix(:));
+    [i_max, j_max] = ind2sub(size(corr_matrix), max_idx);
+    
+    fprintf('Ìàêñèìàëüíàÿ êîğğåëÿöèÿ: %.4f\n', max_corr);
+    fprintf('Ìåæäó: T1=%.1f è T2=%.1f\n', temps1(i_max), temps2(j_max));
+end
