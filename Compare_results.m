@@ -213,7 +213,7 @@ end
 
 function t_plot = normalize_temp_axis(t_raw, assumed_min, assumed_max, ncols)
     t = t_raw(:).'; good = isfinite(t); t = t(good);
-    ok = ~isempty(t) && issorted(t) && (max(t)-min(t) <= 1e3) && numel(t)==ncols;
+    ok = ~isempty(t) && issorted(t) && numel(t)==ncols;
     if ok, t_plot = t;
     else, t_plot = linspace(assumed_min, assumed_max, ncols);
     end
@@ -223,6 +223,7 @@ function plot_correlation_heatmap(C, temps1, temps2, z1, z2, exp1_dir, exp2_dir)
     fig = figure('Name','Korrelyatsiya srednih reflektogramm',...
                  'Units','pixels','Position',[120 80 860 860]);
     imagesc(temps1, temps2, C.'); axis xy; axis image;
+    axis square
     colormap('jet'); caxis([0 1]);
     cb = colorbar; cb.Label.String = 'corr';
     xlabel('Eksperiment 1: temperatura (spec. ed.)');
